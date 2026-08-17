@@ -136,6 +136,17 @@ namespace slskd.Shares
         void InsertScan(long timestamp, Options.SharesOptions options);
 
         /// <summary>
+        ///     Marks an existing file as seen during the current scan if its filesystem metadata is unchanged.
+        /// </summary>
+        /// <param name="maskedFilename">The fully qualified remote path of the file.</param>
+        /// <param name="originalFilename">The fully qualified local path of the file.</param>
+        /// <param name="size">The current size of the file.</param>
+        /// <param name="touchedAt">The current last-modified timestamp reported by the host OS.</param>
+        /// <param name="timestamp">The timestamp associated with the current scan.</param>
+        /// <returns>A value indicating whether a matching cached record was found and updated.</returns>
+        bool TryMarkFileAsSeen(string maskedFilename, string originalFilename, long size, DateTime touchedAt, long timestamp);
+
+        /// <summary>
         ///     Lists all directories.
         /// </summary>
         /// <param name="parentDirectory">The optional directory prefix used for listing subdirectories.</param>

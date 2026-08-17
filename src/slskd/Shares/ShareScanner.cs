@@ -92,7 +92,7 @@ namespace slskd.Shares
             Files = fileService;
             SoulseekFileFactory = soulseekFileFactory ?? new SoulseekFileFactory(fileService: Files);
 
-            Flags = Program.Flags;
+            Flags = Program.Flags ?? new Options.FlagsOptions();
         }
 
         /// <summary>
@@ -271,6 +271,7 @@ namespace slskd.Shares
                 var current = 0;
                 var cached = 0;
                 var filtered = 0;
+                var reused = 0;
 
                 // set up a function to reliably resolve the Share given a directory; users can define nested shares,
                 // so we need to sort to ensure the deepest-nested share is selected first
@@ -307,6 +308,7 @@ namespace slskd.Shares
 
                             var addedFiles = 0;
                             var filteredFiles = 0;
+                            var reusedFiles = 0;
 
                             var share = ResolveShareFromDirectory(directory);
 
@@ -335,12 +337,19 @@ namespace slskd.Shares
                                         continue;
                                     }
 
-                                    var file = SoulseekFileFactory.Create(
-                                        filename: info.FullName,
-                                        maskedFilename: info.FullName.ReplaceFirst(share.LocalPath, share.RemotePath).NormalizePathForSoulseek());
-
-                                    repository.InsertFile(maskedFilename: file.Filename, originalFilename: info.FullName, touchedAt: info.LastWriteTimeUtc, file, timestamp);
                                     addedFiles++;
+
+                                    var originalFilename = info.FullName;
+                                    var maskedFilename = originalFilename.ReplaceFirst(share.LocalPath, share.RemotePath).NormalizePathForSoulseek();
+
+                                    if (repository.TryMarkFileAsSeen(maskedFilename, originalFilename, info.Length, info.LastWriteTimeUtc, timestamp))
+                                    {
+                                        reusedFiles++;
+                                        continue;
+                                    }
+
+                                    var file = SoulseekFileFactory.Create(originalFilename, maskedFilename);
+                                    repository.InsertFile(maskedFilename, originalFilename, info.LastWriteTimeUtc, file, timestamp);
                                 }
                             }
                             catch (Exception ex)
@@ -352,8 +361,9 @@ namespace slskd.Shares
                             Interlocked.Increment(ref current);
                             Interlocked.Add(ref filtered, filteredFiles);
                             Interlocked.Add(ref cached, addedFiles);
+                            Interlocked.Add(ref reused, reusedFiles);
 
-                            Log.Debug("Finished scanning {Directory}: {Added} files added and {Filtered} filtered", directory, addedFiles, filteredFiles);
+                            Log.Debug("Finished scanning {Directory}: {Files} files found, {Reused} reused and {Filtered} filtered", directory, addedFiles, reusedFiles, filteredFiles);
                             State.SetValue(state => state with { FillProgress = current / (double)unmaskedDirectories.Count, Files = cached });
                         }));
                 }
@@ -388,7 +398,7 @@ namespace slskd.Shares
                     await Task.WhenAll(workers.Select(w => w.Completed));
                     Log.Debug("All workers finished");
 
-                    Log.Information("Scan found {Files} files, cached {Cached}, and filtered {Filtered} in {Elapsed}ms", cached + filtered, cached, filtered, sw.ElapsedMilliseconds - swSnapshot);
+                    Log.Information("Scan found {Files} files ({Reused} unchanged metadata records reused and {Filtered} filtered) in {Elapsed}ms", cached, reused, filtered, sw.ElapsedMilliseconds - swSnapshot);
                     swSnapshot = sw.ElapsedMilliseconds;
 
                     var deletedFiles = repository.PruneFiles(olderThanTimestamp: timestamp);
