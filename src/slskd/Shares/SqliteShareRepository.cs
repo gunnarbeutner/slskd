@@ -34,6 +34,7 @@ namespace slskd.Shares
 {
     using System;
     using System.Collections.Generic;
+    using System.Globalization;
     using System.Linq;
     using System.Timers;
     using Microsoft.Data.Sqlite;
@@ -369,12 +370,39 @@ namespace slskd.Shares
                     cmd.Parameters.AddWithValue("maskedFilename", maskedFilename);
                     cmd.Parameters.AddWithValue("originalFilename", originalFilename);
                     cmd.Parameters.AddWithValue("size", file.Size);
-                    cmd.Parameters.AddWithValue("touchedAt", touchedAt.ToLongDateString());
+                    cmd.Parameters.AddWithValue("touchedAt", SerializeTouchedAt(touchedAt));
                     cmd.Parameters.AddWithValue("code", file.Code);
                     cmd.Parameters.AddWithValue("extension", file.Extension);
                     cmd.Parameters.AddWithValue("attributeJson", file.Attributes.ToJson());
                     cmd.Parameters.AddWithValue("timestamp", timestamp);
                 });
+        }
+
+        /// <summary>
+        ///     Marks an existing file as seen during the current scan if its filesystem metadata is unchanged.
+        /// </summary>
+        /// <param name="maskedFilename">The fully qualified remote path of the file.</param>
+        /// <param name="originalFilename">The fully qualified local path of the file.</param>
+        /// <param name="size">The current size of the file.</param>
+        /// <param name="touchedAt">The current last-modified timestamp reported by the host OS.</param>
+        /// <param name="timestamp">The timestamp associated with the current scan.</param>
+        /// <returns>A value indicating whether a matching cached record was found and updated.</returns>
+        public bool TryMarkFileAsSeen(string maskedFilename, string originalFilename, long size, DateTime touchedAt, long timestamp)
+        {
+            using var conn = GetConnection();
+
+            var updated = conn.ExecuteNonQuery("UPDATE files SET timestamp = @timestamp " +
+                "WHERE maskedFilename = @maskedFilename AND originalFilename = @originalFilename " +
+                "AND size = @size AND touchedAt = @touchedAt;", cmd =>
+                {
+                    cmd.Parameters.AddWithValue("maskedFilename", maskedFilename);
+                    cmd.Parameters.AddWithValue("originalFilename", originalFilename);
+                    cmd.Parameters.AddWithValue("size", size);
+                    cmd.Parameters.AddWithValue("touchedAt", SerializeTouchedAt(touchedAt));
+                    cmd.Parameters.AddWithValue("timestamp", timestamp);
+                });
+
+            return updated == 1;
         }
 
         /// <summary>
@@ -759,6 +787,9 @@ namespace slskd.Shares
                 Disposed = true;
             }
         }
+
+        private static string SerializeTouchedAt(DateTime touchedAt)
+            => touchedAt.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
 
         private SqliteConnection GetConnection(string connectionString = null)
         {

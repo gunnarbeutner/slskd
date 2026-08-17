@@ -92,7 +92,7 @@ namespace slskd.Shares
             Files = fileService;
             SoulseekFileFactory = soulseekFileFactory ?? new SoulseekFileFactory(fileService: Files);
 
-            Flags = Program.Flags;
+            Flags = Program.Flags ?? new Options.FlagsOptions();
         }
 
         /// <summary>
@@ -238,6 +238,7 @@ namespace slskd.Shares
                 var current = 0;
                 var cached = 0;
                 var filtered = 0;
+                var reused = 0;
 
                 // set up a channel to fan out for directory scanning
                 var channel = Channel.CreateBounded<string>(new BoundedChannelOptions(1000)
@@ -262,6 +263,7 @@ namespace slskd.Shares
 
                             var addedFiles = 0;
                             var filteredFiles = 0;
+                            var reusedFiles = 0;
 
                             var share = Shares.First(share => directory.StartsWith(share.LocalPath));
 
@@ -280,22 +282,29 @@ namespace slskd.Shares
                                     RecurseSubdirectories = false,
                                 });
 
-                                addedFiles = newFiles.Length;
-
                                 // merge the new dictionary with the rest this will overwrite any duplicate keys, but keys are the fully
                                 // qualified name the only time this *should* cause problems is if one of the shares is a subdirectory of another.
                                 foreach (var originalFilename in newFiles)
                                 {
-                                    var info = Files.ResolveFileInfo(originalFilename);
-                                    var file = SoulseekFileFactory.Create(originalFilename, maskedFilename: originalFilename.ReplaceFirst(share.LocalPath, share.RemotePath).NormalizePathForSoulseek());
-
                                     if (filters.Any(filter => filter.IsMatch(originalFilename)))
                                     {
                                         filteredFiles++;
                                         continue;
                                     }
 
-                                    repository.InsertFile(maskedFilename: file.Filename, originalFilename, touchedAt: info.LastWriteTimeUtc, file, timestamp);
+                                    addedFiles++;
+
+                                    var info = Files.ResolveFileInfo(originalFilename);
+                                    var maskedFilename = originalFilename.ReplaceFirst(share.LocalPath, share.RemotePath).NormalizePathForSoulseek();
+
+                                    if (repository.TryMarkFileAsSeen(maskedFilename, originalFilename, info.Length, info.LastWriteTimeUtc, timestamp))
+                                    {
+                                        reusedFiles++;
+                                        continue;
+                                    }
+
+                                    var file = SoulseekFileFactory.Create(originalFilename, maskedFilename);
+                                    repository.InsertFile(maskedFilename, originalFilename, info.LastWriteTimeUtc, file, timestamp);
                                 }
                             }
                             catch (Exception ex)
@@ -307,8 +316,9 @@ namespace slskd.Shares
                             Interlocked.Increment(ref current);
                             Interlocked.Add(ref filtered, filteredFiles);
                             Interlocked.Add(ref cached, addedFiles);
+                            Interlocked.Add(ref reused, reusedFiles);
 
-                            Log.Debug("Finished scanning {Directory}: {Added} files added and {Filtered} filtered", directory, addedFiles, filteredFiles);
+                            Log.Debug("Finished scanning {Directory}: {Files} files found, {Reused} reused and {Filtered} filtered", directory, addedFiles, reusedFiles, filteredFiles);
                             State.SetValue(state => state with { FillProgress = current / (double)unmaskedDirectories.Count, Files = cached });
                         }));
                 }
@@ -343,7 +353,7 @@ namespace slskd.Shares
                     await Task.WhenAll(workers.Select(w => w.Completed));
                     Log.Debug("All workers finished");
 
-                    Log.Information("Scan found {Files} files (and {Filtered} were filtered) in {Elapsed}ms", cached, filtered, sw.ElapsedMilliseconds - swSnapshot);
+                    Log.Information("Scan found {Files} files ({Reused} unchanged metadata records reused and {Filtered} filtered) in {Elapsed}ms", cached, reused, filtered, sw.ElapsedMilliseconds - swSnapshot);
                     swSnapshot = sw.ElapsedMilliseconds;
 
                     var deletedFiles = repository.PruneFiles(olderThanTimestamp: timestamp);
